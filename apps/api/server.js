@@ -1,71 +1,82 @@
+// apps/api/server.js
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as db from './db.js';
-import { errorHandler } from './middleware/error.js';
+import errorHandler from './middleware/error.js'; // default export
 
-// --- Setup ---
 const PORT = process.env.PORT || 3000;
-const app = express();
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
-const httpLogger = pinoHttp({ logger });
 
-// --- CORS Configuration ---
+// Logger sicuro (niente token/cookie nei log)
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  redact: ['req.headers.authorization', 'req.headers.cookie'],
+});
+
+const app = express();
+
+// ----- CORS -----
 const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || '';
-const allowedOrigins = ['http://localhost:5173', ...allowedOriginsEnv.split(',').filter(Boolean)];
+const allowed = new Set(
+  ['http://localhost:5173', ...allowedOriginsEnv.split(',').map(s => s.trim()).filter(Boolean)]
+);
 
 const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+  origin(origin, cb) {
+    // consenti anche richieste senza origin (curl, healthcheck)
+    if (!origin || allowed.has(origin)) return cb(null, true);
+    return cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
 };
 
-
-// --- Middleware ---
+// ----- Middleware base -----
+const maxMb = Number(process.env.MAX_UPLOAD_MB || 20);
 app.use(helmet());
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(httpLogger);
+app.use(express.json({ limit: `${maxMb}mb` }));
 
+app.use(
+  pinoHttp({
+    logger,
+    serializers: {
+      req(req) {
+        return {
+          method: req.method,
+          url: req.url,
+          remoteAddress: req.ip,
+          headers: { ...req.headers, authorization: undefined, cookie: undefined },
+        };
+      },
+      res(res) {
+        return { statusCode: res.statusCode };
+      },
+    },
+  })
+);
 
-// --- Routes ---
+// ----- Routes -----
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
-/**
- * @route GET /health
- * @description Basic health check to confirm the server is running.
- */
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-/**
- * @route GET /db/health
- * @description Checks the database connection by querying the current timestamp.
- */
 app.get('/db/health', async (req, res, next) => {
   try {
-    const result = await db.healthCheck();
-    res.status(200).json({ status: 'ok', ts: result.ts });
-  } catch (error) {
-    logger.error(error, 'Database health check failed');
-    next(error); // Pass the error to the centralized error handler
+    const { ts } = await db.healthCheck();
+    res.status(200).json({ status: 'ok', ts });
+  } catch (err) {
+    req.log?.error({ err }, 'DB health check failed');
+    next(err);
   }
 });
 
+// 404 (facoltativo ma utile)
+app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
 
-// --- Error Handling ---
+// Handler errori centralizzato
 app.use(errorHandler);
 
-
-// --- Server Start ---
+// ----- Avvio -----
 app.listen(PORT, () => {
   logger.info(`Server is running on port ${PORT}`);
 });
