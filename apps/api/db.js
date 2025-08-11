@@ -28,4 +28,3 @@ export async function healthCheck() {
 
 /** Export default opzionale */
 export default { pool, query, healthCheck };
-
