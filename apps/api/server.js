@@ -60,9 +60,19 @@ app.use(
 // ----- Routes -----
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
+// Fallback robusto: prova healthCheck(), altrimenti esegui query diretta
 app.get('/db/health', async (req, res, next) => {
   try {
-    const { ts } = await db.healthCheck();
+    let ts;
+    if (typeof db.healthCheck === 'function') {
+      const r = await db.healthCheck();
+      ts = r?.ts;
+    } else if (typeof db.query === 'function') {
+      const { rows } = await db.query('select now() as ts');
+      ts = rows?.[0]?.ts;
+    } else {
+      throw new Error('No DB function available');
+    }
     res.status(200).json({ status: 'ok', ts });
   } catch (err) {
     req.log?.error({ err }, 'DB health check failed');
