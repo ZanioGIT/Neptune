@@ -5,11 +5,13 @@ import helmet from 'helmet';
 import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as db from './db.js';
-import errorHandler from './middleware/error.js'; // default export
+import errorHandler from './middleware/error.js';
+import pg from 'pg'; // fallback diretto se il modulo db non risponde
+const { Pool } = pg;
 
 const PORT = process.env.PORT || 3000;
 
-// Logger sicuro (niente token/cookie nei log)
+// Logger sicuro
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   redact: ['req.headers.authorization', 'req.headers.cookie'],
@@ -22,10 +24,8 @@ const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || '';
 const allowed = new Set(
   ['http://localhost:5173', ...allowedOriginsEnv.split(',').map(s => s.trim()).filter(Boolean)]
 );
-
 const corsOptions = {
   origin(origin, cb) {
-    // consenti anche richieste senza origin (curl, healthcheck)
     if (!origin || allowed.has(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS'));
   },
@@ -57,13 +57,22 @@ app.use(
   })
 );
 
+// ----- LOG DIAGNOSTICO all'avvio -----
+logger.info({
+  hasQuery: typeof db.query,
+  hasHealthCheck: typeof db.healthCheck,
+  hasPool: !!db.pool,
+  hasDatabaseUrl: !!process.env.DATABASE_URL
+}, 'db-exports-and-env');
+
 // ----- Routes -----
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
-// Fallback robusto: prova healthCheck(), altrimenti esegui query diretta
+// Fallback robusto su /db/health
 app.get('/db/health', async (req, res, next) => {
   try {
     let ts;
+
     if (typeof db.healthCheck === 'function') {
       const r = await db.healthCheck();
       ts = r?.ts;
@@ -71,19 +80,33 @@ app.get('/db/health', async (req, res, next) => {
       const { rows } = await db.query('select now() as ts');
       ts = rows?.[0]?.ts;
     } else {
-      throw new Error('No DB function available');
+      // Fallback estremo: Pool inline
+      if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is missing');
+      const pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false },
+      });
+      const { rows } = await pool.query('select now() as ts');
+      ts = rows?.[0]?.ts;
+      // chiudi il pool temporaneo
+      pool.end().catch(() => {});
     }
+
     res.status(200).json({ status: 'ok', ts });
   } catch (err) {
-    req.log?.error({ err }, 'DB health check failed');
+    // Log utile (senza segreti)
+    req.log?.error(
+      { msg: 'DB health check failed', err: err?.message || String(err) },
+      'db-health-error'
+    );
     next(err);
   }
 });
 
-// 404 (facoltativo ma utile)
+// 404
 app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
 
-// Handler errori centralizzato
+// Error handler centralizzato
 app.use(errorHandler);
 
 // ----- Avvio -----
