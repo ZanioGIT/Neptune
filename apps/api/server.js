@@ -1,41 +1,54 @@
 // server.js
-const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first'); // evita tentativi IPv6 su Render
+'use strict';
 
-const fastify = require('fastify')({ logger: true });
+const dns = require('node:dns');
+// Forza la risoluzione IPv4 prima dell'IPv6 (fix ENETUNREACH su Render)
+dns.setDefaultResultOrder('ipv4first');
+
+const express = require('express');
 const { Pool } = require('pg');
+const pino = require('pino')();
+const pinoHttp = require('pino-http')({ logger: pino });
 
-const PORT = parseInt(process.env.PORT || '10000', 10);
+const PORT = process.env.PORT || 10000;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-fastify.get('/health', async (_, reply) => reply.send({ status: 'ok' }));
+const app = express();
+app.use(pinoHttp);
 
+// Inizializza il pool solo se ho la URL del DB
 let pool = null;
 if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },        // richiesto da Neon/managed PG
-    max: 3,
-    idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 5_000,
+    // la maggior parte dei provider richiede SSL in produzione
+    ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
+    max: 5,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 10000
   });
+  pino.info({ hasPool: true, hasDatabaseUrl: true }, 'db-initialized');
+} else {
+  pino.warn('DATABASE_URL not set — /db/* routes will return 503');
 }
 
-fastify.get('/db/health', async (req, reply) => {
-  if (!pool) return reply.code(500).send({ error: 'db_not_configured' });
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/db/health', async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'db_not_configured' });
   try {
-    const r = await pool.query('select 1 as ok');
-    return reply.send({ status: 'ok', result: r.rows[0] });
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok' });
   } catch (err) {
-    req.log.error({ err }, 'db-health-error');
-    return reply.code(500).send({ error: 'db_unreachable' });
+    req.log.error({ err }, 'DB health check failed');
+    res.status(500).json({ error: 'internal_server_error' });
   }
 });
 
-fastify.listen({ host: '0.0.0.0', port: PORT }, (err) => {
-  if (err) {
-    fastify.log.error({ err }, 'server-start-error');
-    process.exit(1);
-  }
-  fastify.log.info(`Server is running on port ${PORT}`);
-});
+// Evita 404 sul root/HEAD che vedi nei log
+app.head('/', (_req, res) => res.status(200).end());
+app.get('/', (_req, res) => res.status(200).send('OK'));
+
+app.listen(PORT, () => pino.info(`Server is running on port ${PORT}`));
