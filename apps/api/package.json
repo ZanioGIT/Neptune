@@ -1,4 +1,22 @@
 {
-  "status": "ok",
-  "ts": "2024-05-21T10:30:00.123Z"
+  "name": "minimal-api-for-render",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A minimal Express.js API ready for deployment on Render.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'Build step not required, skipping.'"
+  },
+  "author": "Full-stack Lead",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "pg": "^8.12.0",
+    "pino": "^9.1.0",
+    "pino-http": "^10.1.0"
+  }
 }
