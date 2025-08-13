@@ -1,33 +1,27 @@
 // db.js
-'use strict';
-
 const { Pool } = require('pg');
 
-const CS = process.env.DATABASE_URL;
-if (!CS) throw new Error('Missing env var DATABASE_URL');
+if (!process.env.DATABASE_URL) {
+  throw new Error('Missing DATABASE_URL env var');
+}
 
-// SSL: attivalo a meno che PGSSLMODE sia 'disable'
-const ssl =
-  (process.env.PGSSLMODE || '').toLowerCase() === 'disable'
-    ? false
-    : { rejectUnauthorized: false };
-
+/**
+ * IMPORTANT:
+ * - Tutte le opzioni SSL vivono dentro la DATABASE_URL (…?sslmode=no-verify).
+ * - Non aggiungere oggetti/flag ssl qui, per evitare conflitti.
+ */
 const pool = new Pool({
-  connectionString: CS,
-  ssl,
-  max: parseInt(process.env.PGPOOL_MAX || '5', 10),
-  idleTimeoutMillis: parseInt(process.env.PG_IDLE_TIMEOUT || '10000', 10),
-  connectionTimeoutMillis: parseInt(process.env.PG_CONN_TIMEOUT || '10000', 10),
-  allowExitOnIdle: true,
+  connectionString: process.env.DATABASE_URL,
+  // opzionali ma utili in ambienti PaaS gratuiti:
+  max: Number(process.env.PGPOOL_MAX || 5),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
 });
 
-async function query(text, params) {
-  return pool.query(text, params);
-}
-
+// Health check: esegue una query semplicissima
 async function healthCheck() {
-  const { rows } = await pool.query('SELECT 1 AS ok');
-  return rows[0]?.ok === 1;
+  const res = await pool.query('select 1 as ok');
+  return res.rows?.[0]?.ok === 1;
 }
 
-module.exports = { pool, query, healthCheck };
+module.exports = { pool, healthCheck };
