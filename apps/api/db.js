@@ -1,51 +1,53 @@
-// apps/api/db.js
+// db.js
 'use strict';
 
-/**
- * Pool Postgres robusto per Supabase (direct o Transaction Pooler).
- * - SSL esplicito con rejectUnauthorized:false per evitare SELF_SIGNED_CERT_IN_CHAIN
- * - IPv4 gestito a livello di runtime in server.js
- */
+const { Pool } = require('pg');
+const pino = require('pino')();
 
-const { URL } = require('node:url');
-const pg = require('pg');
-
-// Imposta un default SSL globale per qualunque client/Pool creato da 'pg'
-pg.defaults.ssl = { rejectUnauthorized: false };
-
-const { Pool } = pg;
-
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error('DATABASE_URL is not set');
+const CS = process.env.DATABASE_URL;
+if (!CS) {
+  throw new Error('Missing env var DATABASE_URL');
 }
 
-const url = new URL(connectionString);
-
-// Se qualcuno ha impostato PGSSLMODE=disable disattiviamo SSL, altrimenti lo abilitiamo in modo "no-verify"
-const ssl =
-  String(process.env.PGSSLMODE || '').toLowerCase() === 'disable'
-    ? false
-    : {
-        rejectUnauthorized: false,
-        // assicura SNI corretto (utile con alcuni terminatori TLS/proxy)
-        servername: url.hostname,
-      };
+/**
+ * Abilita SSL quando serve (Supabase lo richiede).
+ * Usiamo rejectUnauthorized:false per evitare di dover fornire il CA.
+ * Se preferisci, puoi caricare il certificato CA e metterlo in ssl.ca.
+ */
+function buildSsl(connectionString) {
+  try {
+    // Se nel connection string c'è sslmode=require, abilita SSL
+    if (/sslmode=(require|verify-ca|verify-full)/i.test(connectionString)) {
+      return { rejectUnauthorized: false };
+    }
+    // Per Supabase abilitiamo SSL di default
+    if (/\.(supabase\.co|supabase\.com)$/i.test(new URL(connectionString).hostname)) {
+      return { rejectUnauthorized: false };
+    }
+    // On by default se non esplicitamente disabilitato
+    if ((process.env.PGSSLMODE || '').toLowerCase() !== 'disable') {
+      return { rejectUnauthorized: false };
+    }
+  } catch (_) {}
+  return false;
+}
 
 const pool = new Pool({
-  connectionString,
-  ssl,
-  max: Number(process.env.PGPOOL_MAX || 5),
-  connectionTimeoutMillis: 5_000,
-  idleTimeoutMillis: 10_000,
+  connectionString: CS,
+  ssl: buildSsl(CS),
+  max: parseInt(process.env.PGPOOL_MAX || '5', 10),
+  idleTimeoutMillis: parseInt(process.env.PG_IDLE_TIMEOUT || '10000', 10),
+  connectionTimeoutMillis: parseInt(process.env.PG_CONN_TIMEOUT || '10000', 10),
+  allowExitOnIdle: true,
 });
 
-async function healthCheck() {
-  const { rows } = await pool.query('select now() as ts');
-  return rows[0];
+async function query(text, params) {
+  return pool.query(text, params);
 }
 
-module.exports = {
-  pool,
-  healthCheck,
-};
+async function healthCheck() {
+  const { rows } = await pool.query('SELECT 1 AS ok');
+  return rows[0]?.ok === 1;
+}
+
+module.exports = { pool, query, healthCheck };
