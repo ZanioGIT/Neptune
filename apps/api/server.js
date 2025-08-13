@@ -1,56 +1,37 @@
-// apps/api/server.js
+// server.js
 'use strict';
 
-/**
- * Neptune_WebService – API bootstrap
- * - Forza la risoluzione IPv4 (Render può non avere egress IPv6)
- * - Espone /health e /db/health con logging strutturato
- */
-
 const dns = require('node:dns');
-dns.setDefaultResultOrder('ipv4first'); // ulteriore safety net oltre a NODE_OPTIONS
+// Priorità IPv4 (utile su Render)
+dns.setDefaultResultOrder('ipv4first');
 
 const express = require('express');
 const pino = require('pino')();
 const pinoHttp = require('pino-http')({ logger: pino });
-
-const { pool, healthCheck } = require('./db');
+const { healthCheck } = require('./db');
 
 const PORT = process.env.PORT || 10000;
 
 const app = express();
-app.use(pinoHttp);
+app.use(pinoHttp());
 
-// Liveness probe
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+// Health generale del servizio
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
 
-// Verifica connettività DB
+// Health del DB
 app.get('/db/health', async (req, res) => {
   try {
-    await healthCheck();
-    res.json({ status: 'ok' });
+    const ok = await healthCheck();
+    res.json({ status: ok ? 'ok' : 'fail' });
   } catch (err) {
-    // Log dettagliato lato server, ma risposta "igienizzata" lato client
-    req.log.error(
-      {
-        err,
-        code: err.code,
-        name: err.name,
-        message: err.message,
-      },
-      'DB health check failed'
-    );
-
-    const publicError =
-      err.code === 'SELF_SIGNED_CERT_IN_CHAIN'
-        ? 'tls_cert_chain_error'
-        : 'internal_server_error';
-
-    res.status(500).json({ error: publicError });
+    req.log.error({ err }, 'DB health check failed');
+    res.status(500).json({ error: 'internal_server_error' });
   }
 });
 
-// Evita 404 durante probe/proxy
+// Evita 404 fastidiosi nel root
 app.head('/', (_req, res) => res.status(200).end());
 app.get('/', (_req, res) => res.status(200).send('OK'));
 
